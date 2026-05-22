@@ -1,282 +1,598 @@
-import network
-import uasyncio as asyncio
+import socket
 import time
-import gc
-from microdot import Microdot, Response
+import network
 
-WIFI_SSID = 'ITRobotics'
-WIFI_PASSWORD = 'ITRobotics23'
+import config
 
-STATE = {
-    'status': 'Starting',
-    'error': '',
-    'networks': [],
-    'selected_network': None,
-    'attack_mode': 'broadcast',
-    'target_mac': '',
-    'duration': 10,
-    'running': False,
-    'attack_task': None,
-    'deauth_supported': False,
-}
+try:
+    import ujson as json
+except ImportError:
+    import json
 
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-app = Microdot()
 
-def wifi_connect(ssid, password, timeout=20):
-    if wlan.isconnected():
-        STATE['status'] = 'Connected to Wi-Fi'
+HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Network Radar</title>
+  <style>
+    :root {
+      --bg: #070b10;
+      --panel: rgba(15, 23, 32, .88);
+      --panel2: rgba(24, 35, 48, .92);
+      --line: rgba(126, 231, 255, .18);
+      --text: #f4fbff;
+      --muted: #91a8b8;
+      --cyan: #23d9ff;
+      --mint: #29f0b4;
+      --blue: #7aa7ff;
+      --yellow: #ffd166;
+      --red: #ff5c7a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(35, 217, 255, .18), transparent 28%),
+        radial-gradient(circle at 88% 8%, rgba(41, 240, 180, .16), transparent 30%),
+        linear-gradient(135deg, #070b10 0%, #0b1118 45%, #070b10 100%);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    body:before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .25;
+      background-image:
+        linear-gradient(rgba(126, 231, 255, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(126, 231, 255, .08) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, black, transparent 85%);
+    }
+    main {
+      position: relative;
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 26px 0 42px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .tag {
+      margin: 0 0 5px;
+      color: var(--mint);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    h1, h2, p { margin: 0; letter-spacing: 0; }
+    h1 {
+      font-size: clamp(34px, 5vw, 62px);
+      line-height: .95;
+      text-shadow: 0 0 34px rgba(35, 217, 255, .22);
+    }
+    .subtitle {
+      max-width: 620px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.45;
+    }
+    .actions { display: flex; gap: 8px; }
+    button {
+      min-width: 132px;
+      min-height: 50px;
+      border: 0;
+      border-radius: 6px;
+      background: linear-gradient(135deg, var(--mint), var(--cyan));
+      color: #031211;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 12px 32px rgba(35, 217, 255, .18);
+    }
+    button.secondary {
+      background: linear-gradient(135deg, var(--blue), #b9ceff);
+      color: #07101f;
+    }
+    button:disabled { opacity: .65; cursor: wait; }
+    .dashboard {
+      display: grid;
+      grid-template-columns: minmax(320px, 1.15fr) minmax(320px, .85fr);
+      gap: 14px;
+      align-items: stretch;
+      margin-bottom: 14px;
+    }
+    .hero, .panel, .box {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .35);
+      backdrop-filter: blur(18px);
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 330px 1fr;
+      gap: 18px;
+      min-height: 380px;
+      padding: 18px;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .radar {
+      position: relative;
+      aspect-ratio: 1;
+      align-self: center;
+      border-radius: 50%;
+      border: 1px solid rgba(35, 217, 255, .35);
+      background:
+        radial-gradient(circle, rgba(41, 240, 180, .18) 0 2px, transparent 3px),
+        repeating-radial-gradient(circle, transparent 0 48px, rgba(35, 217, 255, .18) 49px 50px),
+        linear-gradient(rgba(35, 217, 255, .18), rgba(35, 217, 255, .02));
+      box-shadow: inset 0 0 45px rgba(35, 217, 255, .14), 0 0 42px rgba(41, 240, 180, .12);
+    }
+    .radar:before {
+      content: "";
+      position: absolute;
+      inset: 50% 0 0 50%;
+      transform-origin: 0 0;
+      background: linear-gradient(90deg, rgba(41, 240, 180, .52), transparent 70%);
+      clip-path: polygon(0 0, 100% 0, 0 100%);
+      animation: sweep 3.2s linear infinite;
+    }
+    .radar:after {
+      content: "";
+      position: absolute;
+      inset: 50%;
+      width: 14px;
+      height: 14px;
+      margin: -7px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 24px var(--mint);
+    }
+    .ring-line {
+      position: absolute;
+      inset: 50% 8%;
+      height: 1px;
+      background: rgba(126, 231, 255, .22);
+    }
+    .ring-line.v { transform: rotate(90deg); }
+    .dot {
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 22px var(--cyan);
+    }
+    .dot.router { left: 65%; top: 32%; background: var(--yellow); box-shadow: 0 0 22px var(--yellow); }
+    .dot.node1 { left: 26%; top: 58%; }
+    .dot.node2 { left: 72%; top: 68%; background: var(--mint); box-shadow: 0 0 22px var(--mint); }
+    @keyframes sweep { to { transform: rotate(360deg); } }
+    .hero-info {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 8px 4px;
+    }
+    .status-pill {
+      width: max-content;
+      border: 1px solid rgba(41, 240, 180, .35);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: var(--mint);
+      background: rgba(41, 240, 180, .08);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .hero-copy h2 {
+      margin-bottom: 10px;
+      font-size: 28px;
+    }
+    .hero-copy p {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .legend {
+      display: grid;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .legend span {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .legend i {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 12px var(--cyan);
+    }
+    .legend .router-i { background: var(--yellow); box-shadow: 0 0 12px var(--yellow); }
+    .legend .esp-i { background: var(--mint); box-shadow: 0 0 12px var(--mint); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .box {
+      min-height: 96px;
+      padding: 16px;
+      border-radius: 8px;
+    }
+    .box span, .muted { color: var(--muted); font-size: 13px; }
+    .box strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 25px;
+      overflow-wrap: anywhere;
+    }
+    .panel {
+      min-height: 380px;
+      padding: 18px;
+      border-radius: 8px;
+    }
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { font-size: 24px; }
+    #message {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 8px;
+      color: var(--muted);
+      background: rgba(126, 231, 255, .06);
+    }
+    #list { display: grid; gap: 8px; padding-top: 12px; }
+    .device {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 76px;
+      padding: 14px;
+      border-radius: 6px;
+      background: var(--panel2);
+      border: 1px solid rgba(126, 231, 255, .1);
+    }
+    .icon {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      border-radius: 6px;
+      background: rgba(35, 217, 255, .1);
+      color: var(--cyan);
+      font-size: 24px;
+    }
+    .device h3 { margin: 0 0 5px; font-size: 17px; }
+    .badge {
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(41, 240, 180, .12);
+      color: var(--mint);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .scanbar {
+      height: 8px;
+      margin-top: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(126, 231, 255, .1);
+    }
+    .scanbar div {
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, var(--mint), var(--cyan), var(--blue));
+      box-shadow: 0 0 22px rgba(35, 217, 255, .5);
+    }
+    .scanning .scanbar div { animation: loading 1.4s ease-in-out infinite; }
+    @keyframes loading {
+      0% { width: 10%; transform: translateX(-20%); }
+      50% { width: 75%; transform: translateX(20%); }
+      100% { width: 10%; transform: translateX(920%); }
+    }
+    @media (max-width: 720px) {
+      header, .panel-head { flex-direction: column; align-items: stretch; }
+      .dashboard { grid-template-columns: 1fr; }
+      .hero { grid-template-columns: 1fr; }
+      .actions { flex-direction: column; }
+      button { width: 100%; }
+      .grid { grid-template-columns: repeat(2, 1fr); }
+      .device { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="tag">ESP32 live cyber lab</p>
+        <h1>Network Radar</h1>
+        <p class="subtitle">A small ESP32 turns into a local web server and scans the Wi-Fi network for active devices and open services.</p>
+      </div>
+      <div class="actions">
+        <button onclick="scan('fast')">Quick sweep</button>
+        <button class="secondary" onclick="scan('deep')">Full scan</button>
+      </div>
+    </header>
+
+    <section class="dashboard">
+      <div class="hero">
+        <div class="radar">
+          <div class="ring-line"></div>
+          <div class="ring-line v"></div>
+          <div class="dot router"></div>
+          <div class="dot node1"></div>
+          <div class="dot node2"></div>
+        </div>
+        <div class="hero-info">
+          <span id="systemStatus" class="status-pill">SYSTEM READY</span>
+          <div class="hero-copy">
+            <h2>Live Wi-Fi intelligence</h2>
+            <p>The ESP32 hosts this dashboard directly from the board. Each scan checks nearby network addresses and shows devices that respond on known service ports.</p>
+          </div>
+          <div class="legend">
+            <span><i class="esp-i"></i> ESP32 scanner node</span>
+            <span><i class="router-i"></i> Router / gateway</span>
+            <span><i></i> Detected network device</span>
+          </div>
+        </div>
+      </div>
+
+      <section class="panel" id="panel">
+        <div class="panel-head">
+          <h2>Scan results</h2>
+          <span id="ports" class="muted">Ports: -</span>
+        </div>
+        <div id="message">Choose a scan mode to start the network sweep.</div>
+        <div class="scanbar"><div></div></div>
+        <div id="list"></div>
+      </section>
+    </section>
+
+    <section class="grid">
+      <div class="box"><span>ESP32 address</span><strong id="ownIp">-</strong></div>
+      <div class="box"><span>Router gateway</span><strong id="gateway">-</strong></div>
+      <div class="box"><span>Devices found</span><strong id="count">0</strong></div>
+      <div class="box"><span>Scan duration</span><strong id="time">-</strong></div>
+    </section>
+  </main>
+
+  <script>
+    const ownIp = document.getElementById("ownIp");
+    const gateway = document.getElementById("gateway");
+    const count = document.getElementById("count");
+    const time = document.getElementById("time");
+    const ports = document.getElementById("ports");
+    const message = document.getElementById("message");
+    const list = document.getElementById("list");
+    const panel = document.getElementById("panel");
+    const systemStatus = document.getElementById("systemStatus");
+
+    function setButtons(disabled) {
+      document.querySelectorAll("button").forEach(button => button.disabled = disabled);
+    }
+
+    function showDevices(devices) {
+      list.innerHTML = "";
+      devices.forEach(device => {
+        const item = document.createElement("article");
+        item.className = "device";
+        const icon = device.name.includes("Router") ? "R" : "N";
+        item.innerHTML = `
+          <div class="icon">${icon}</div>
+          <div>
+            <h3>${device.name}</h3>
+            <p class="muted">IP ${device.ip} | ${device.type} | open ports: ${device.open_ports.join(", ")}</p>
+          </div>
+          <span class="badge">ONLINE</span>
+        `;
+        list.appendChild(item);
+      });
+    }
+
+    async function scan(mode) {
+      setButtons(true);
+      panel.classList.add("scanning");
+      systemStatus.textContent = "SCANNING NETWORK";
+      list.innerHTML = "";
+      message.textContent = mode === "deep"
+        ? "Full scan is running. The ESP32 is checking the whole local range."
+        : "Quick sweep is running. The ESP32 is checking the most common addresses.";
+
+      try {
+        const response = await fetch(`/scan?mode=${mode}`);
+        const data = await response.json();
+        ownIp.textContent = data.own_ip;
+        gateway.textContent = data.gateway;
+        count.textContent = data.count;
+        time.textContent = Math.round(data.elapsed_ms / 1000) + "s";
+        ports.textContent = "Ports: " + data.ports.join(", ");
+
+        if (data.devices.length) {
+          message.textContent = "Scan complete. Active network nodes are shown below.";
+          showDevices(data.devices);
+        } else {
+          message.textContent = "Scan complete. No devices answered on the checked service ports.";
+        }
+        systemStatus.textContent = "SCAN COMPLETE";
+      } catch (error) {
+        message.textContent = "Scan failed: " + error.message;
+        systemStatus.textContent = "SCAN ERROR";
+      } finally {
+        panel.classList.remove("scanning");
+        setButtons(false);
+      }
+    }
+  </script>
+</body>
+</html>"""
+
+
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Connecting to Wi-Fi:", config.WIFI_SSID)
+        wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
+        started = time.ticks_ms()
+        while not wlan.isconnected():
+            if time.ticks_diff(time.ticks_ms(), started) > 20000:
+                raise RuntimeError("Wi-Fi connection timeout")
+            time.sleep_ms(250)
+    print("Wi-Fi connected:", wlan.ifconfig())
+    return wlan
+
+
+def send(client, status, body, content_type):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    client.send(("HTTP/1.1 " + status + "\r\n").encode())
+    client.send(("Content-Type: " + content_type + "\r\n").encode())
+    client.send(("Content-Length: " + str(len(body)) + "\r\n").encode())
+    client.send(b"Connection: close\r\n\r\n")
+    client.send(body)
+
+
+def get_path(request):
+    try:
+        first_line = request.decode().split("\r\n", 1)[0]
+        return first_line.split(" ")[1]
+    except Exception:
+        return "/"
+
+
+def ip_parts(ip):
+    return [int(part) for part in ip.split(".")]
+
+
+def device_type(open_ports):
+    if 80 in open_ports or 443 in open_ports:
+        return "Web device"
+    if 22 in open_ports:
+        return "SSH device"
+    if 23 in open_ports:
+        return "Telnet device"
+    if 8080 in open_ports:
+        return "Web device"
+    return "Unknown"
+
+
+def probe(ip, port):
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(config.SCAN_TIMEOUT_MS / 1000)
+        sock.connect((ip, port))
         return True
-    STATE['status'] = 'Connecting to Wi-Fi...'
-    try:
-        wlan.connect(ssid, password)
-        start = time.time()
-        while not wlan.isconnected() and time.time() - start < timeout:
-            time.sleep(1)
-        if wlan.isconnected():
-            STATE['status'] = 'Connected'
-            STATE['error'] = ''
-            return True
-    except Exception as e:
-        STATE['error'] = str(e)
-    STATE['status'] = 'Connection failed'
-    return False
-
-def parse_form(body):
-    data = {}
-    try:
-        text = body.decode('utf-8')
-        for pair in text.split('&'):
-            if '=' in pair:
-                k, v = pair.split('=', 1)
-                data[k] = v.replace('+', ' ').replace('%3A', ':')
-    except:
-        pass
-    return data
-
-def scan_networks():
-    STATE['networks'] = []
-    try:
-        results = wlan.scan()
-        for ssid, bssid, channel, rssi, authmode, hidden in results:
-            ssid_str = ssid.decode('utf-8', 'ignore') if isinstance(ssid, bytes) else ssid
-            STATE['networks'].append({
-                'ssid': ssid_str,
-                'bssid': ':'.join('{:02x}'.format(x) for x in bssid),
-                'channel': channel,
-                'rssi': rssi,
-            })
-        STATE['error'] = ''
-    except Exception as e:
-        STATE['error'] = 'Scan error: ' + str(e)
-
-def format_mac(text):
-    text = text.strip().lower().replace('-', ':').replace(' ', '')
-    if len(text) == 12 and ':' not in text:
-        text = ':'.join(text[i:i+2] for i in range(0, 12, 2))
-    return text
-
-def deauth_available():
-    try:
-        import esp32
-        return hasattr(esp32, 'wifi_deauth')
-    except:
+    except OSError:
         return False
+    finally:
+        if sock:
+            sock.close()
 
-def send_deauth(bssid, target=None):
-    try:
-        import esp32
-        if hasattr(esp32, 'wifi_deauth'):
-            target = target or 'ff:ff:ff:ff:ff:ff'
-            esp32.wifi_deauth(bssid, target)
-            return True
-    except:
-        pass
-    return False
 
-async def attack_loop():
-    start = time.time()
-    duration = STATE['duration']
-    target_mac = format_mac(STATE['target_mac'])
-    selected = STATE['selected_network']
-    if not selected:
-        STATE['error'] = 'No network selected'
-        STATE['running'] = False
-        return
-    bssid = selected['bssid']
-    STATE['status'] = 'Attacking {}'.format('broadcast' if STATE['attack_mode'] == 'broadcast' else target_mac)
-    
-    while STATE['running'] and time.time() - start < duration:
-        if STATE['deauth_supported']:
-            if STATE['attack_mode'] == 'targeted' and target_mac:
-                send_deauth(bssid, target_mac)
+def hosts_for_scan(wlan, mode):
+    own_ip, mask, gateway, dns = wlan.ifconfig()
+    base = ".".join(own_ip.split(".")[:3])
+    own_last = ip_parts(own_ip)[3]
+
+    if mode == "deep":
+        last_numbers = range(1, 255)
+    else:
+        common = set((1, 2, 3, 4, 5, 10, 20, 30, 50, 100, 101, 102, 103, 104, 105, 150, 200, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254))
+        for last in range(max(1, own_last - 8), min(254, own_last + 8) + 1):
+            common.add(last)
+        last_numbers = sorted(common)
+
+    hosts = []
+    for host in (gateway, dns):
+        if host and host != own_ip and host not in hosts:
+            hosts.append(host)
+    for last in last_numbers:
+        host = base + "." + str(last)
+        if host != own_ip and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def scan_network(wlan, mode):
+    own_ip, mask, gateway, dns = wlan.ifconfig()
+    started = time.ticks_ms()
+    devices = []
+
+    for ip in hosts_for_scan(wlan, mode):
+        open_ports = []
+        for port in config.SCAN_PORTS:
+            if probe(ip, port):
+                open_ports.append(port)
+        if open_ports:
+            name = "Unknown device"
+            if ip == gateway:
+                name = "Router / Gateway"
+            devices.append({
+                "ip": ip,
+                "name": name,
+                "type": device_type(open_ports),
+                "open_ports": open_ports,
+            })
+
+    return {
+        "own_ip": own_ip,
+        "gateway": gateway,
+        "ports": list(config.SCAN_PORTS),
+        "count": len(devices),
+        "elapsed_ms": time.ticks_diff(time.ticks_ms(), started),
+        "devices": devices,
+    }
+
+
+def start_server(wlan):
+    address = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(address)
+    server.listen(1)
+    print("Open in browser: http://" + wlan.ifconfig()[0])
+
+    while True:
+        client, address = server.accept()
+        try:
+            request = client.recv(1024)
+            path = get_path(request)
+            if path == "/":
+                send(client, "200 OK", HTML, "text/html; charset=utf-8")
+            elif path.startswith("/scan"):
+                mode = "deep" if "mode=deep" in path else "fast"
+                data = scan_network(wlan, mode)
+                send(client, "200 OK", json.dumps(data), "application/json; charset=utf-8")
             else:
-                send_deauth(bssid, None)
-        await asyncio.sleep(0.5)
-    
-    STATE['running'] = False
-    STATE['status'] = 'Idle'
+                send(client, "404 Not Found", "Not found", "text/plain; charset=utf-8")
+        except Exception as error:
+            send(client, "500 Internal Server Error", "Error: " + str(error), "text/plain; charset=utf-8")
+        finally:
+            client.close()
 
-def render_html():
-    ip = wlan.ifconfig()[0] if wlan.isconnected() else 'N/A'
-    wifi_status = 'Connected' if wlan.isconnected() else 'Disconnected'
-    
-    nets_html = ''
-    for n in STATE['networks']:
-        nets_html += '<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(
-            n['ssid'][:20], n['bssid'], n['channel'], n['rssi'])
-    
-    sel_info = 'None'
-    if STATE['selected_network']:
-        sel_info = '{} ({})'.format(STATE['selected_network']['ssid'], STATE['selected_network']['bssid'])
-    
-    error_html = ''
-    if STATE['error']:
-        error_html = '<div style="background:#d32f2f;padding:10px;margin:10px 0;border-radius:5px;color:#fff;">{}</div>'.format(STATE['error'])
-    
-    stop_btn = ''
-    if STATE['running']:
-        stop_btn = '<form method="POST" action="/stop" style="margin-top:10px"><button style="background:#d32f2f">Stop Attack</button></form>'
-    
-    html = """<!DOCTYPE html>
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ESP32 Deauther</title>
-<style>
-body{{ font-family:Arial;padding:15px;background:#111;color:#eee }}
-.container{{ max-width:800px;margin:auto }}
-h1{{ color:#4CAF50 }}
-h2{{ color:#fff;border-bottom:2px solid #2196f3;padding-bottom:10px }}
-button{{ padding:10px 15px;margin:5px;border:0;border-radius:5px;background:#2196f3;color:#fff;cursor:pointer;font-size:14px }}
-button:hover{{ opacity:0.9 }}
-table{{ width:100%;border-collapse:collapse;margin:10px 0;background:#222 }}
-th,td{{ padding:8px;text-align:left;border:1px solid #444 }}
-th{{ background:#333 }}
-input,select{{ width:100%;padding:8px;margin:5px 0;border:1px solid #555;background:#222;color:#eee;border-radius:3px;box-sizing:border-box }}
-.card{{ background:#1a1a1a;padding:15px;margin:15px 0;border-left:4px solid #2196f3;border-radius:5px }}
-.status{{ background:#222;padding:12px;margin:10px 0;border-radius:5px }}
-label{{ display:block;font-weight:bold;margin:10px 0 5px 0 }}
-</style>
-</head><body><div class="container">
-<h1>ESP32 Wi-Fi Deauther</h1>
-<div class="status">
-<b>Status:</b> {status}<br>
-<b>Wi-Fi:</b> {wifi_status} (IP: {ip})
-</div>
-{error_html}
 
-<div class="card">
-<h2>1. Scan Networks</h2>
-<form method="POST" action="/scan"><button type="submit">Scan Networks</button></form>
-<table>
-<tr><th>SSID</th><th>BSSID</th><th>Ch</th><th>RSSI</th></tr>
-{nets_html}
-</table>
-</div>
-
-<div class="card">
-<h2>2. Select Network</h2>
-<p><b>Selected:</b> {sel_info}</p>
-<form method="POST" action="/select">
-<select name="bssid" required><option value="">-- Choose --</option>
-{options_html}
-</select>
-<button type="submit">Select</button>
-</form>
-</div>
-
-<div class="card">
-<h2>3. Attack</h2>
-<form method="POST" action="/start">
-<label>Mode:</label>
-<select name="attack_mode">
-<option value="broadcast"{broadcast_sel}>Broadcast (All)</option>
-<option value="targeted"{targeted_sel}>Targeted (Specific MAC)</option>
-</select>
-<label>Target MAC:</label>
-<input name="target_mac" value="{target_mac}" placeholder="aa:bb:cc:dd:ee:ff">
-<label>Duration (sec):</label>
-<input name="duration" type="number" min="1" max="3600" value="{duration}">
-<button type="submit">Start Attack</button>
-</form>
-{stop_btn}
-</div>
-</div></body></html>
-""".format(
-        status=STATE['status'],
-        wifi_status=wifi_status,
-        ip=ip,
-        error_html=error_html,
-        nets_html=nets_html or '<tr><td colspan="4">No networks</td></tr>',
-        sel_info=sel_info,
-        options_html=''.join('<option value="{}">{} ({})</option>'.format(
-            n['bssid'], n['ssid'][:25], n['bssid']) for n in STATE['networks']),
-        target_mac=STATE['target_mac'],
-        duration=STATE['duration'],
-        broadcast_sel=' selected' if STATE['attack_mode'] == 'broadcast' else '',
-        targeted_sel=' selected' if STATE['attack_mode'] == 'targeted' else '',
-        stop_btn=stop_btn,
-    )
-    return html
-
-@app.route('/')
-async def index(request):
-    return Response(render_html())
-
-@app.route('/scan', methods=['POST'])
-async def scan(request):
-    scan_networks()
-    return Response(render_html())
-
-@app.route('/select', methods=['POST'])
-async def select_network(request):
-    data = parse_form(request.body)
-    bssid = data.get('bssid', '')
-    for net in STATE['networks']:
-        if net['bssid'] == bssid:
-            STATE['selected_network'] = net
-            STATE['error'] = ''
-            break
-    return Response(render_html())
-
-@app.route('/start', methods=['POST'])
-async def start(request):
-    if STATE['running']:
-        STATE['error'] = 'Attack already running'
-        return Response(render_html())
-    data = parse_form(request.body)
-    STATE['attack_mode'] = data.get('attack_mode', 'broadcast')
-    STATE['target_mac'] = format_mac(data.get('target_mac', ''))
-    try:
-        STATE['duration'] = int(data.get('duration', 10))
-    except:
-        STATE['duration'] = 10
-    
-    if STATE['attack_mode'] == 'targeted' and not STATE['target_mac']:
-        STATE['error'] = 'Targeted mode needs MAC address'
-        return Response(render_html())
-    if not STATE['selected_network']:
-        STATE['error'] = 'Please select a network first'
-        return Response(render_html())
-    
-    STATE['running'] = True
-    STATE['error'] = ''
-    STATE['attack_task'] = asyncio.create_task(attack_loop())
-    return Response(render_html())
-
-@app.route('/stop', methods=['POST'])
-async def stop(request):
-    STATE['running'] = False
-    STATE['status'] = 'Stopping'
-    return Response(render_html())
-
-def main():
-    gc.collect()
-    STATE['deauth_supported'] = deauth_available()
-    wifi_connect(WIFI_SSID, WIFI_PASSWORD)
-    ip = wlan.ifconfig()[0] if wlan.isconnected() else 'N/A'
-    print('Web server starting on http://{}'.format(ip))
-    app.run()
-
-if __name__ == '__main__':
-    main()
+wlan = connect_wifi()
+start_server(wlan)
